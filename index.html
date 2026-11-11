@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>熊本県 地域振興局 旅費区分確認マップ</title>
+
+    <!-- PWA用マニフェストの読み込み -->
+    <link rel="manifest" href="manifest.json">
+    <!-- iOSでのPWA対応 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="旅費区分マップ">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    
+    <!-- 主なテーマカラー -->
+    <meta name="theme-color" content="#1a365d">
+
+    <!-- Leaflet.js CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
+        #header { padding: 10px 15px; background: #1a365d; color: white; box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 1000; }
+        #header h3 { margin: 0 0 5px 0; font-size: 18px; }
+        #header select { font-size: 14px; padding: 6px; width: 100%; max-width: 360px; border-radius: 4px; border: none; }
+        #map { flex: 1; height: 100%; width: 100%; }
+        #info-panel {
+            position: absolute; bottom: 20px; left: 20px; z-index: 1000;
+            background: white; padding: 15px; border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3); max-width: 380px; font-size: 14px; color: #000000;
+        }
+        .distance-highlight { font-weight: normal; color: #000000; font-size: 14px; }
+        .dest-highlight { color: #c62828; font-weight: bold; font-size: 16px; }
+        .zone-inside { color: #000000; font-weight: normal; }
+        .zone-outside { color: #000000; font-weight: normal; }
+
+        .map-type-control {
+            background: white;
+            padding: 6px 10px;
+            border-radius: 4px;
+            box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+            font-size: 13px;
+        }
+        .map-type-control select {
+            font-size: 13px;
+            padding: 4px;
+            border-radius: 3px;
+            border: 1px solid #ccc;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .marker-label {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            padding: 0;
+            font-size: 13px;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+        .marker-label-inside {
+            color: #c62828;
+            text-shadow: 1.5px 1.5px 2px #ffffff, -1.5px -1.5px 2px #ffffff, 1.5px -1.5px 2px #ffffff, -1.5px 1.5px 2px #ffffff;
+        }
+        .marker-label-outside {
+            color: #0275d8;
+            font-weight: bold;
+            text-shadow: 1.5px 1.5px 2px #ffffff, -1.5px -1.5px 2px #ffffff, 1.5px -1.5px 2px #ffffff, -1.5px 1.5px 2px #ffffff;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="header">
+        <h3>熊本県 旅費区分確認マップ</h3>
+        <select id="location-select">
+            <option value="">-- 対象の拠点を選択してください --</option>
+        </select>
+    </div>
+
+    <div id="map"></div>
+
+    <div id="info-panel">
+        <div id="result-info">上のリストから拠点を選択してください。</div>
+    </div>
+
+    <!-- Leaflet.js JavaScript -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script>
+        // Service Workerの登録処理
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('Service Worker 登録成功:', reg.scope))
+                    .catch(err => console.log('Service Worker 登録失敗:', err));
+            });
+        }
+
+        const RADIUS_METERS = 8000;
+
+        const travelDestinations = [
+            { name: "熊本県庁", address: "熊本市中央区水前寺6-18-1", lat: 32.78795, lng: 130.7411, isOffice: true },
+            { name: "林業研究・研修センター", address: "熊本市中央区黒髪8丁目222-2", lat: 32.8238, lng: 130.7394, isOffice: true },
+            { name: "玉名地域振興局", address: "玉名市岩崎1004-1", lat: 32.93118, lng: 130.5593, isOffice: true },
+            { name: "鹿本地域振興局", address: "山鹿市山鹿1026-3", lat: 33.01812, lng: 130.6911, isOffice: true },
+            { name: "菊池地域振興局", address: "菊池市隈府1272-10", lat: 32.98584, lng: 130.8131, isOffice: true },
+            { name: "阿蘇地域振興局", address: "阿蘇市一の宮町宮地2402", lat: 32.93784, lng: 131.114, isOffice: true },
+            { name: "上益城地域振興局", address: "上益城郡御船町辺田見396-1", lat: 32.70819, lng: 130.8039, isOffice: true },
+            { name: "宇城地域振興局", address: "宇城市松橋町久具400-1", lat: 32.64745, lng: 130.6903, isOffice: true },
+            { name: "芦北地域振興局", address: "葦北郡芦北町芦北2670", lat: 32.2978, lng: 130.494, isOffice: true },
+            { name: "球磨地域振興局", address: "人吉市西間下町86-1", lat: 32.20629, lng: 130.7586, isOffice: true },
+            { name: "天草地域振興局", address: "天草市今釜新町3530", lat: 32.46194, lng: 130.1953, isOffice: true },
+            // その他の地点データ（元のリストをそのまま維持）
+            { name: "県庁", lat: 32.78795, lng: 130.7411 },
+            { name: "南千反畑", lat: 32.80589, lng: 130.7162 },
+            { name: "二の丸", lat: 32.80796, lng: 130.7012 },
+            { name: "上の郷", lat: 32.80562, lng: 130.6054 },
+            { name: "川尻", lat: 32.73829, lng: 130.6785 },
+            { name: "東町", lat: 32.7847, lng: 130.7656 },
+            { name: "長嶺", lat: 32.80956, lng: 130.7647 },
+            { name: "石原", lat: 32.84122, lng: 130.7818 },
+            { name: "武蔵ヶ丘", lat: 32.85649, lng: 130.7733 },
+            { name: "戸島", lat: 32.82459, lng: 130.7943 },
+            { name: "田迎", lat: 32.7682, lng: 130.7154 },
+            { name: "竜田", lat: 32.8238, lng: 130.7394 },
+            { name: "清水", lat: 32.84939, lng: 130.7298 },
+            { name: "高橋", lat: 32.78395, lng: 130.6559 },
+            { name: "中島", lat: 32.76627, lng: 130.6288 },
+            { name: "沖新", lat: 32.76472, lng: 130.6104 },
+            { name: "松尾", lat: 32.79764, lng: 130.6144 },
+            { name: "鹿子木", lat: 32.87018, lng: 130.7036 },
+            { name: "下硯川", lat: 32.85323, lng: 130.7021 },
+            { name: "河内町船津", lat: 32.831, lng: 130.5871 },
+            { name: "河内町野", lat: 32.84325, lng: 130.6428 },
+            { name: "並建", lat: 32.75437, lng: 130.6343 },
+            { name: "奥古閑", lat: 32.73263, lng: 130.6367 },
+            { name: "松橋", lat: 32.64745, lng: 130.6903 },
+            { name: "南豊崎", lat: 32.64178, lng: 130.6798 },
+            { name: "豊福", lat: 32.68651, lng: 130.7127 },
+            { name: "宇土", lat: 32.67631, lng: 130.659 },
+            { name: "花園", lat: 32.69409, lng: 130.682 },
+            { name: "緑川", lat: 32.70507, lng: 130.6312 },
+            { name: "網津", lat: 32.69638, lng: 130.5986 },
+            { name: "網田", lat: 32.67116, lng: 130.5494 },
+            { name: "走潟", lat: 32.70507, lng: 130.647 },
+            { name: "三角", lat: 32.62255, lng: 130.4697 },
+            { name: "戸馳", lat: 32.62863, lng: 130.4927 },
+            { name: "郡浦", lat: 32.64169, lng: 130.529 },
+            { name: "手場", lat: 32.62473, lng: 130.5581 },
+            { name: "大田尾", lat: 32.60666, lng: 130.4791 },
+            { name: "高良", lat: 32.64722, lng: 130.6677 },
+            { name: "松合", lat: 32.63304, lng: 130.6048 },
+            { name: "大見", lat: 32.62929, lng: 130.5886 },
+            { name: "長崎", lat: 32.63962, lng: 130.6362 },
+            { name: "宮地", lat: 32.70936, lng: 130.7292 },
+            { name: "千町", lat: 32.73182, lng: 130.7294 },
+            { name: "塚原", lat: 32.68985, lng: 130.7461 },
+            { name: "清藤", lat: 32.71571, lng: 130.679 },
+            { name: "平原", lat: 32.69951, lng: 130.685 },
+            { name: "小川", lat: 32.59265, lng: 130.7048 },
+            { name: "小野部田", lat: 32.60603, lng: 130.7188 },
+            { name: "海東", lat: 32.58349, lng: 130.7452 },
+            { name: "糸石", lat: 32.63887, lng: 130.7496 },
+            { name: "上郷", lat: 32.61979, lng: 130.7518 },
+            { name: "堅志田", lat: 32.64439, lng: 130.7889 },
+            { name: "佐俣", lat: 32.62231, lng: 130.8207 },
+            { name: "津留", lat: 32.61183, lng: 130.7911 },
+            { name: "払川", lat: 32.58544, lng: 130.8048 },
+            { name: "砥用", lat: 32.61772, lng: 130.8668 },
+            { name: "早楠", lat: 32.59786, lng: 130.8894 },
+            { name: "東砥用", lat: 32.63939, lng: 130.9187 },
+            { name: "洞岳", lat: 32.62105, lng: 130.9376 },
+            { name: "川越", lat: 32.64968, lng: 130.9025 },
+            { name: "玉名", lat: 32.93118, lng: 130.5593 },
+            { name: "伊倉", lat: 32.9059, lng: 130.575 },
+            { name: "大浜", lat: 32.89949, lng: 130.5433 },
+            { name: "石貫", lat: 32.95763, lng: 130.5634 },
+            { name: "三ツ川", lat: 32.98744, lng: 130.5622 },
+            { name: "溝上", lat: 32.96312, lng: 130.5881 },
+            { name: "安楽寺", lat: 32.93196, lng: 130.6039 },
+            { name: "荒尾", lat: 32.987, lng: 130.4325 },
+            { name: "水島", lat: 32.96322, lng: 130.4492 },
+            { name: "緑ヶ丘", lat: 32.99882, lng: 130.488 },
+            { name: "府本", lat: 32.97539, lng: 130.4966 },
+            { name: "中土", lat: 32.91721, lng: 130.5202 },
+            { name: "古閑", lat: 32.92976, lng: 130.5089 },
+            { name: "高道", lat: 32.9073, lng: 130.5135 },
+            { name: "鍋", lat: 32.91052, lng: 130.4933 },
+            { name: "横島", lat: 32.87724, lng: 130.5551 },
+            { name: "横島漁港", lat: 32.851, lng: 130.5458 },
+            { name: "小天", lat: 32.86545, lng: 130.5922 },
+            { name: "部田見", lat: 32.87799, lng: 130.5833 },
+            { name: "上有所", lat: 32.85339, lng: 130.6096 },
+            { name: "木葉", lat: 32.91908, lng: 130.6285 },
+            { name: "上白木", lat: 32.89704, lng: 130.6278 },
+            { name: "江田", lat: 32.97855, lng: 130.6058 },
+            { name: "用木", lat: 32.96581, lng: 130.6298 },
+            { name: "久井原", lat: 33.00072, lng: 130.6024 },
+            { name: "高野", lat: 33.00305, lng: 130.6278 },
+            { name: "緑", lat: 33.06605, lng: 130.6225 },
+            { name: "太田黒", lat: 33.04073, lng: 130.6209 },
+            { name: "西吉地", lat: 33.07894, lng: 130.5917 },
+            { name: "関町", lat: 33.06125, lng: 130.5413 },
+            { name: "上坂下", lat: 33.01609, lng: 130.5598 },
+            { name: "相谷", lat: 33.0419, lng: 130.5757 },
+            { name: "上長田", lat: 33.02687, lng: 130.5312 },
+            { name: "長洲", lat: 32.92969, lng: 130.4532 },
+            { name: "清源寺", lat: 32.92041, lng: 130.4738 },
+            { name: "宮野", lat: 32.93222, lng: 130.4765 },
+            { name: "山鹿", lat: 33.01812, lng: 130.6911 },
+            { name: "小原", lat: 33.01097, lng: 130.6682 },
+            { name: "方保田", lat: 32.99827, lng: 130.7129 },
+            { name: "久原", lat: 33.02944, lng: 130.7206 },
+            { name: "平山", lat: 33.04963, lng: 130.6611 },
+            { name: "津留", lat: 33.06203, lng: 130.6932 },
+            { name: "四丁", lat: 33.10875, lng: 130.6934 },
+            { name: "芋生", lat: 33.08489, lng: 130.6945 },
+            { name: "多久", lat: 33.11409, lng: 130.7298 },
+            { name: "柚木谷", lat: 33.1492, lng: 130.686 },
+            { name: "下内田", lat: 33.02669, lng: 130.7629 },
+            { name: "松尾", lat: 33.01711, lng: 130.7856 },
+            { name: "上内田", lat: 33.06302, lng: 130.7738 },
+            { name: "番所", lat: 33.08603, lng: 130.8055 },
+            { name: "来民", lat: 33.00169, lng: 130.7398 },
+            { name: "中川", lat: 32.97981, lng: 130.7331 },
+            { name: "合里", lat: 32.97766, lng: 130.6796 },
+            { name: "千田", lat: 32.96862, lng: 130.6961 },
+            { name: "梅木谷", lat: 32.96016, lng: 130.6509 },
+            { name: "植木", lat: 32.89588, lng: 130.6916 },
+            { name: "有泉", lat: 32.91296, lng: 130.7084 },
+            { name: "木留", lat: 32.88337, lng: 130.6598 },
+            { name: "内", lat: 32.93772, lng: 130.6813 },
+            { name: "豊田", lat: 32.94045, lng: 130.7065 },
+            { name: "正清", lat: 32.96297, lng: 130.7169 },
+            { name: "平原", lat: 32.92032, lng: 130.6551 },
+            { name: "隈府", lat: 32.98584, lng: 130.8131 },
+            { name: "下河原", lat: 32.96907, lng: 130.8344 },
+            { name: "出田", lat: 32.95347, lng: 130.7943 },
+            { name: "原", lat: 33.00086, lng: 130.8728 },
+            { name: "竜門", lat: 33.02486, lng: 130.842 },
+            { name: "班蛇口", lat: 33.07405, lng: 130.8631 },
+            { name: "立門", lat: 33.01595, lng: 130.8956 },
+            { name: "鉾の甲", lat: 33.05868, lng: 130.9036 },
+            { name: "楮畑", lat: 33.03127, lng: 130.9561 },
+            { name: "菊池渓谷", lat: 33.00497, lng: 130.9352 },
+            { name: "伊牟田", lat: 32.98856, lng: 130.9435 },
+            { name: "砂田", lat: 32.96958, lng: 130.7651 },
+            { name: "林原", lat: 32.94949, lng: 130.7457 },
+            { name: "小原", lat: 32.94523, lng: 130.8551 },
+            { name: "弁利", lat: 32.96295, lng: 130.8697 },
+            { name: "桜ヶ水", lat: 32.93841, lng: 130.8892 },
+            { name: "鞍岳", lat: 32.95688, lng: 130.9425 },
+            { name: "大津", lat: 32.87886, lng: 130.8687 },
+            { name: "陣内", lat: 32.86015, lng: 130.8701 },
+            { name: "杉水", lat: 32.91207, lng: 130.8537 },
+            { name: "平川", lat: 32.90502, lng: 130.8863 },
+            { name: "真木", lat: 32.91386, lng: 130.9207 },
+            { name: "大林", lat: 32.8706, lng: 130.9111 },
+            { name: "峠", lat: 32.90892, lng: 130.9506 },
+            { name: "久保田", lat: 32.86209, lng: 130.8287 },
+            { name: "原水", lat: 32.87707, lng: 130.8315 },
+            { name: "曲手", lat: 32.85071, lng: 130.8359 },
+            { name: "竹迫", lat: 32.8934, lng: 130.7977 },
+            { name: "福本", lat: 32.92233, lng: 130.7758 },
+            { name: "田島", lat: 32.93118, lng: 130.7431 },
+            { name: "住吉", lat: 32.93235, lng: 130.8081 },
+            { name: "御代志", lat: 32.88883, lng: 130.7447 },
+            { name: "大池", lat: 32.89483, lng: 130.7567 },
+            { name: "野々島", lat: 32.90902, lng: 130.7426 },
+            { name: "須屋", lat: 32.85587, lng: 130.7273 },
+            { name: "宮地", lat: 32.93784, lng: 131.114 },
+            { name: "中通", lat: 32.96375, lng: 131.113 },
+            { name: "手野", lat: 32.9704, lng: 131.1296 },
+            { name: "萩の草", lat: 33.02953, lng: 131.1512 },
+            { name: "仙酔峡", lat: 32.91836, lng: 131.1087 },
+            { name: "内牧", lat: 32.97183, lng: 131.0497 },
+            { name: "小野田", lat: 32.96895, lng: 131.0891 },
+            { name: "狩尾", lat: 32.9529, lng: 131.0192 },
+            { name: "永草", lat: 32.93734, lng: 131.0249 },
+            { name: "坊中", lat: 32.93835, lng: 131.0814 },
+            { name: "草千里", lat: 32.88535, lng: 131.0521 },
+            { name: "大観望", lat: 33.00788, lng: 131.0653 },
+            { name: "端辺", lat: 33.00318, lng: 131.0065 },
+            { name: "深葉", lat: 33.00797, lng: 130.9757 },
+            { name: "大鶴", lat: 32.98468, lng: 130.9678 },
+            { name: "赤馬場", lat: 33.09692, lng: 131.0703 },
+            { name: "満願寺", lat: 33.07677, lng: 131.0955 },
+            { name: "星和", lat: 33.05339, lng: 131.1314 },
+            { name: "黒川", lat: 33.07772, lng: 131.1292 },
+            { name: "瀬の本", lat: 33.0711, lng: 131.1886 },
+            { name: "湯田", lat: 33.0743, lng: 131.0352 },
+            { name: "宮原", lat: 33.11921, lng: 131.0725 },
+            { name: "蓬来", lat: 33.12966, lng: 131.0366 },
+            { name: "室原", lat: 33.1377, lng: 130.9856 },
+            { name: "北里", lat: 33.14302, lng: 131.0907 },
+            { name: "岳ノ湯", lat: 33.15545, lng: 131.1371 },
+            { name: "万成", lat: 33.12132, lng: 131.1023 },
+            { name: "杖立", lat: 33.16007, lng: 131.0454 },
+            { name: "山鹿", lat: 32.99562, lng: 131.218 },
+            { name: "田尻", lat: 33.03142, lng: 131.1735 },
+            { name: "波野", lat: 32.93201, lng: 131.227 },
+            { name: "小池野", lat: 32.95659, lng: 131.2196 },
+            { name: "遊雀", lat: 32.90892, lng: 131.1805 },
+            { name: "仁田水", lat: 32.9031, lng: 131.2299 },
+            { name: "今", lat: 32.72577, lng: 131.1665 },
+            { name: "菅尾", lat: 32.7129, lng: 131.1482 },
+            { name: "馬見原", lat: 32.68201, lng: 131.1542 },
+            { name: "長崎", lat: 32.70359, lng: 131.172 },
+            { name: "二瀬本", lat: 32.74382, lng: 131.1838 },
+            { name: "東竹原", lat: 32.79062, lng: 131.1769 },
+            { name: "花上", lat: 32.73385, lng: 131.2022 },
+            { name: "上差尾", lat: 32.74748, lng: 131.1269 },
+            { name: "大野", lat: 32.68871, lng: 131.1338 },
+            { name: "高森", lat: 32.81894, lng: 131.1259 },
+            { name: "色見", lat: 32.84384, lng: 131.1219 },
+            { name: "上色見", lat: 32.85765, lng: 131.153 },
+            { name: "大戸の口", lat: 32.87862, lng: 131.1756 },
+            { name: "草部", lat: 32.78218, lng: 131.2167 },
+            { name: "赤羽根", lat: 32.82334, lng: 131.1928 },
+            { name: "津留", lat: 32.83029, lng: 131.2622 },
+            { name: "尾下", lat: 32.85852, lng: 131.2567 },
+            { name: "河原", lat: 32.88472, lng: 131.2415 },
+            { name: "吉田", lat: 32.8255, lng: 131.081 },
+            { name: "中松", lat: 32.82973, lng: 131.0502 },
+            { name: "河陰", lat: 32.81951, lng: 131.0317 },
+            { name: "河陽", lat: 32.85796, lng: 131.0023 },
+            { name: "黒川", lat: 32.88577, lng: 130.9941 },
+            { name: "立野", lat: 32.87752, lng: 130.9689 },
+            { name: "湯の谷", lat: 32.88033, lng: 131.031 },
+            { name: "小森", lat: 32.83587, lng: 130.9032 },
+            { name: "門出", lat: 32.81262, lng: 130.8875 },
+            { name: "灰床", lat: 32.78802, lng: 130.9081 },
+            { name: "辺田見", lat: 32.70819, lng: 130.8039 },
+            { name: "高木", lat: 32.7381, lng: 130.7917 },
+            { name: "小坂", lat: 32.72603, lng: 130.775 },
+            { name: "上野", lat: 32.73505, lng: 130.8544 },
+            { name: "田代", lat: 32.74771, lng: 130.8868 },
+            { name: "吉無田", lat: 32.77655, lng: 130.9222 },
+            { name: "座女木", lat: 32.76368, lng: 130.8427 },
+            { name: "水越", lat: 32.68764, lng: 130.8705 },
+            { name: "上島", lat: 32.74087, lng: 130.7574 },
+            { name: "宮園", lat: 32.79175, lng: 130.8171 },
+            { name: "砥川", lat: 32.75893, lng: 130.8099 },
+            { name: "上陳", lat: 32.80274, lng: 130.8531 },
+            { name: "消防学校", lat: 32.79905, lng: 130.7887 },
+            { name: "袴野", lat: 32.77665, lng: 130.886 },
+            { name: "岩下", lat: 32.65039, lng: 130.8102 },
+            { name: "小鹿", lat: 32.64948, lng: 130.848 },
+            { name: "上早川", lat: 32.67329, lng: 130.8179 },
+            { name: "津志田", lat: 32.68458, lng: 130.7812 },
+            { name: "浜町", lat: 32.68693, lng: 130.9839 },
+            { name: "津留", lat: 32.64395, lng: 130.9922 },
+            { name: "内大臣", lat: 32.59981, lng: 131.0043 },
+            { name: "菅", lat: 32.65087, lng: 131.0248 },
+            { name: "川野", lat: 32.67922, lng: 131.0323 },
+            { name: "黒川", lat: 32.71118, lng: 131.0206 },
+            { name: "稲生野", lat: 32.74109, lng: 131.0489 },
+            { name: "下名連石", lat: 32.72984, lng: 131.002 },
+            { name: "北中島", lat: 32.73253, lng: 130.9288 },
+            { name: "島木", lat: 32.71111, lng: 130.9139 },
+            { name: "猿渡", lat: 32.67109, lng: 130.927 },
+            { name: "白小野", lat: 32.66286, lng: 130.9678 },
+            { name: "大平", lat: 32.69129, lng: 131.0873 },
+            { name: "小峰", lat: 32.6709, lng: 131.0721 },
+            { name: "木原谷", lat: 32.65776, lng: 131.0562 },
+            { name: "緑川", lat: 32.63268, lng: 131.0904 },
+            { name: "井無田原", lat: 32.73217, lng: 131.1049 },
+            { name: "鶴ヶ田", lat: 32.70705, lng: 131.0687 },
+            { name: "八代", lat: 32.50851, lng: 130.6017 },
+            { name: "港町", lat: 32.51236, lng: 130.5658 },
+            { name: "郡築", lat: 32.53425, lng: 130.5735 },
+            { name: "高植", lat: 32.47621, lng: 130.5849 },
+            { name: "日奈久", lat: 32.43617, lng: 130.5816 },
+            { name: "二見", lat: 32.40692, lng: 130.5601 },
+            { name: "昭和", lat: 32.5607, lng: 130.6032 },
+            { name: "西松江城", lat: 32.50887, lng: 130.5958 },
+            { name: "興善寺", lat: 32.52985, lng: 130.663 },
+            { name: "川原", lat: 32.50612, lng: 130.669 },
+            { name: "坂本", lat: 32.43642, lng: 130.6576 },
+            { name: "鮎帰", lat: 32.43197, lng: 130.6958 },
+            { name: "責", lat: 32.40255, lng: 130.6968 },
+            { name: "深水", lat: 32.46991, lng: 130.6928 },
+            { name: "久多良木", lat: 32.39791, lng: 130.5975 },
+            { name: "市之俣", lat: 32.35329, lng: 130.6744 },
+            { name: "新牟田", lat: 32.53414, lng: 130.6329 },
+            { name: "鏡", lat: 32.56263, lng: 130.6489 },
+            { name: "両出", lat: 32.56018, lng: 130.6338 },
+            { name: "野崎", lat: 32.59022, lng: 130.6351 },
+            { name: "島地", lat: 32.58208, lng: 130.6734 },
+            { name: "大野", lat: 32.56641, lng: 130.7037 },
+            { name: "宮原", lat: 32.5549, lng: 130.6806 },
+            { name: "南種山", lat: 32.54773, lng: 130.717 },
+            { name: "河俣", lat: 32.51566, lng: 130.7424 },
+            { name: "鶴木場", lat: 32.49858, lng: 130.7595 },
+            { name: "内木場", lat: 32.51735, lng: 130.705 },
+            { name: "柿迫", lat: 32.54784, lng: 130.81 },
+            { name: "下岳", lat: 32.57204, lng: 130.7883 },
+            { name: "仁田尾", lat: 32.52268, lng: 130.887 },
+            { name: "椎原", lat: 32.48915, lng: 130.9047 },
+            { name: "久連子", lat: 32.46129, lng: 130.9104 },
+            { name: "栗木", lat: 32.49367, lng: 130.826 },
+            { name: "葉木", lat: 32.54882, lng: 130.9485 },
+            { name: "樅木", lat: 32.50102, lng: 130.9657 },
+            { name: "芦北", lat: 32.2978, lng: 130.494 },
+            { name: "湯浦", lat: 32.27278, lng: 130.5009 },
+            { name: "古石", lat: 32.2166, lng: 130.5095 },
+            { name: "上小場", lat: 32.1953, lng: 130.5259 },
+            { name: "米田", lat: 32.24913, lng: 130.53 },
+            { name: "大野", lat: 32.26383, lng: 130.5638 },
+            { name: "国見", lat: 32.22041, lng: 130.5646 },
+            { name: "大尼田", lat: 32.32178, lng: 130.5516 },
+            { name: "吉尾", lat: 32.32827, lng: 130.585 },
+            { name: "海路", lat: 32.34959, lng: 130.6178 },
+            { name: "上原", lat: 32.36981, lng: 130.6043 },
+            { name: "大岩", lat: 32.34708, lng: 130.58 },
+            { name: "黒岩", lat: 32.36417, lng: 130.5799 },
+            { name: "白木", lat: 32.29867, lng: 130.5793 },
+            { name: "告", lat: 32.27786, lng: 130.6104 },
+            { name: "水俣", lat: 32.21116, lng: 130.4065 },
+            { name: "湯之児", lat: 32.23363, lng: 130.4169 },
+            { name: "水俣港", lat: 32.19609, lng: 130.3783 },
+            { name: "湯出", lat: 32.15322, lng: 130.4417 },
+            { name: "正千山", lat: 32.11862, lng: 130.45750 },
+            { name: "石坂川", lat: 32.16217, lng: 130.4801 },
+            { name: "石飛", lat: 32.1385, lng: 130.4962 },
+            { name: "越小場", lat: 32.15235, lng: 130.5213 },
+            { name: "久木野", lat: 32.17351, lng: 130.5256 },
+            { name: "大川", lat: 32.17233, lng: 130.5678 },
+            { name: "田浦", lat: 32.36377, lng: 130.5081 },
+            { name: "横居木", lat: 32.36288, lng: 130.5414 },
+            { name: "岩城", lat: 32.231, lng: 130.4561 },
+            { name: "赤崎", lat: 32.25234, lng: 130.4316 },
+            { name: "平国", lat: 32.26932, lng: 130.4502 },
+            { name: "人吉", lat: 32.20629, lng: 130.7586 },
+            { name: "鹿目", lat: 32.19062, lng: 130.6889 },
+            { name: "大畑", lat: 32.16369, lng: 130.8035 },
+            { name: "加久藤峠", lat: 32.13398, lng: 130.8042 },
+            { name: "大塚", lat: 32.13189, lng: 130.715 },
+            { name: "田野", lat: 32.13448, lng: 130.681 },
+            { name: "桑木津留", lat: 32.10646, lng: 130.7143 },
+            { name: "一武", lat: 32.19898, lng: 130.842 },
+            { name: "木上", lat: 32.22706, lng: 130.8402 },
+            { name: "西", lat: 32.19918, lng: 130.8193 },
+            { name: "上", lat: 32.21766, lng: 130.9007 },
+            { name: "皆越", lat: 32.19034, lng: 130.9516 },
+            { name: "八ヶ峰", lat: 32.11618, lng: 130.951 },
+            { name: "免田", lat: 32.23353, lng: 130.8959 },
+            { name: "岡原", lat: 32.23928, lng: 130.9314 },
+            { name: "多良木", lat: 32.26329, lng: 130.9362 },
+            { name: "久米", lat: 32.24861, lng: 130.9592 },
+            { name: "槻木", lat: 32.2024, lng: 131.029 },
+            { name: "大師", lat: 32.18536, lng: 131.0662 },
+            { name: "黒肥地", lat: 32.27599, lng: 130.9417 },
+            { name: "赤木", lat: 32.30745, lng: 130.951 },
+            { name: "柳野", lat: 32.31614, lng: 130.9401 },
+            { name: "宮ヶ野", lat: 32.31482, lng: 130.9148 },
+            { name: "湯前", lat: 32.27613, lng: 130.9814 },
+            { name: "江代", lat: 32.32131, lng: 131.0127 },
+            { name: "湯山", lat: 32.31638, lng: 131.0443 },
+            { name: "古屋敷", lat: 32.3794, lng: 131.0247 },
+            { name: "横才", lat: 32.3971, lng: 131.0079 },
+            { name: "平畑", lat: 32.40301, lng: 131.0533 },
+            { name: "水洗", lat: 32.36794, lng: 130.968 },
+            { name: "須恵", lat: 32.26726, lng: 130.9045 },
+            { name: "平山", lat: 32.29594, lng: 130.8918 },
+            { name: "深田", lat: 32.24381, lng: 130.8747 },
+            { name: "深水", lat: 32.23912, lng: 130.8027 },
+            { name: "川辺", lat: 32.26572, lng: 130.8269 },
+            { name: "四浦", lat: 32.30239, lng: 130.8442 },
+            { name: "野原", lat: 32.35112, lng: 130.8438 },
+            { name: "五木", lat: 32.39679, lng: 130.825 },
+            { name: "平瀬", lat: 32.42283, lng: 130.7898 },
+            { name: "小鶴", lat: 32.44643, lng: 130.7749 },
+            { name: "宮園", lat: 32.4414, lng: 130.8573 },
+            { name: "平沢津", lat: 32.47735, lng: 130.8386 },
+            { name: "端海野", lat: 32.48699, lng: 130.7978 },
+            { name: "入鴨", lat: 32.42706, lng: 130.9062 },
+            { name: "下梶原", lat: 32.39163, lng: 130.9229 },
+            { name: "山田甲", lat: 32.24667, lng: 130.7667 },
+            { name: "尾崎", lat: 32.289, lng: 130.7958 },
+            { name: "屋形", lat: 32.30349, lng: 130.7475 },
+            { name: "尾寄崎", lat: 32.32396, lng: 130.7784 },
+            { name: "大河内", lat: 32.34799, lng: 130.7304 },
+            { name: "一勝地", lat: 32.25227, lng: 130.6515 },
+            { name: "渡", lat: 32.23998, lng: 130.6934 },
+            { name: "境目", lat: 32.27127, lng: 130.7063 },
+            { name: "大槻", lat: 32.31858, lng: 130.6853 },
+            { name: "内布", lat: 32.25293, lng: 130.7309 },
+            { name: "三ヶ浦", lat: 32.22462, lng: 130.667 },
+            { name: "遠原", lat: 32.18772, lng: 130.6431 },
+            { name: "高沢", lat: 32.29531, lng: 130.6416 },
+            { name: "横井", lat: 32.30984, lng: 130.6529 },
+            { name: "讓葉", lat: 32.23205, lng: 130.5944 },
+            { name: "神瀬", lat: 32.31471, lng: 130.6123 },
+            { name: "本渡", lat: 32.46194, lng: 130.1953 },
+            { name: "佐伊津", lat: 32.49335, lng: 130.1927 },
+            { name: "本町", lat: 32.46712, lng: 130.134 },
+            { name: "亀川", lat: 32.44607, lng: 130.2018 },
+            { name: "宇土", lat: 32.43619, lng: 130.1568 },
+            { name: "楠浦", lat: 32.41307, lng: 130.1973 },
+            { name: "宮地岳", lat: 32.38275, lng: 130.1276 },
+            { name: "志柿", lat: 32.46038, lng: 130.2335 },
+            { name: "下浦", lat: 32.41808, lng: 130.2339 },
+            { name: "牛深", lat: 32.19505, lng: 130.027 },
+            { name: "魚貫", lat: 32.23913, lng: 130.0116 },
+            { name: "亀浦", lat: 32.27571, lng: 130.0294 },
+            { name: "久玉", lat: 32.21877, lng: 130.033 },
+            { name: "山の浦", lat: 32.22355, lng: 130.0734 },
+            { name: "深海", lat: 32.25486, lng: 130.0941 },
+            { name: "魚貫崎", lat: 32.24955, lng: 129.9854 },
+            { name: "上", lat: 32.58715, lng: 130.4306 },
+            { name: "登立", lat: 32.59544, lng: 130.4416 },
+            { name: "中", lat: 32.54875, lng: 130.439 },
+            { name: "維和", lat: 32.56465, lng: 130.4648 },
+            { name: "湯島", lat: 32.6005, lng: 130.3355 },
+            { name: "合津", lat: 32.51804, lng: 130.4322 },
+            { name: "阿村", lat: 32.5168, lng: 130.4474 },
+            { name: "教良木", lat: 32.46474, lng: 130.3738 },
+            { name: "樋合", lat: 32.54144, lng: 130.4065 },
+            { name: "赤崎", lat: 32.51297, lng: 130.3139 },
+            { name: "大浦", lat: 32.52164, lng: 130.3596 },
+            { name: "楠甫", lat: 32.49752, lng: 130.3701 },
+            { name: "上津浦", lat: 32.49152, lng: 130.2937 },
+            { name: "島子", lat: 32.47453, lng: 130.2573 },
+            { name: "姫浦", lat: 32.43975, lng: 130.4096 },
+            { name: "牟田", lat: 32.46712, lng: 130.4328 },
+            { name: "高戸", lat: 32.39412, lng: 130.3899 },
+            { name: "樋島", lat: 32.39139, lng: 130.4128 },
+            { name: "大道", lat: 32.39052, lng: 130.3693 },
+            { name: "御所浦", lat: 32.34008, lng: 130.339 },
+            { name: "牧島", lat: 32.34955, lng: 130.3246 },
+            { name: "浦", lat: 32.31116, lng: 130.3279 },
+            { name: "外平", lat: 32.32664, lng: 130.3595 },
+            { name: "横浦", lat: 32.37134, lng: 130.3439 },
+            { name: "棚底", lat: 32.4098, lng: 130.341 },
+            { name: "宮田", lat: 32.39795, lng: 130.3093 },
+            { name: "浦", lat: 32.43349, lng: 130.354 },
+            { name: "馬場", lat: 32.42194, lng: 130.2732 },
+            { name: "河内", lat: 32.44407, lng: 130.3083 },
+            { name: "小宮地", lat: 32.36394, lng: 130.1841 },
+            { name: "大多尾", lat: 32.35473, lng: 130.2115 },
+            { name: "中田", lat: 32.33571, lng: 130.1593 },
+            { name: "立", lat: 32.31448, lng: 130.1769 },
+            { name: "御領", lat: 32.51263, lng: 130.1881 },
+            { name: "鬼池", lat: 32.54703, lng: 130.1867 },
+            { name: "二江", lat: 32.54429, lng: 130.1303 },
+            { name: "手野", lat: 32.51536, lng: 130.1492 },
+            { name: "城河原", lat: 32.49515, lng: 130.149 },
+            { name: "志岐", lat: 32.50958, lng: 130.0493 },
+            { name: "富岡", lat: 32.52237, lng: 130.032 },
+            { name: "坂瀬川", lat: 32.53166, lng: 130.0953 },
+            { name: "都呂々", lat: 32.47081, lng: 130.0379 },
+            { name: "木場", lat: 32.44885, lng: 130.0803 },
+            { name: "高浜", lat: 32.37853, lng: 129.9991 },
+            { name: "大江", lat: 32.32697, lng: 129.9939 },
+            { name: "下田", lat: 32.41412, lng: 130.0038 },
+            { name: "福連木", lat: 32.41893, lng: 130.0731 },
+            { name: "向辺田", lat: 32.26977, lng: 129.9883 },
+            { name: "河浦", lat: 32.3332, lng: 130.0789 },
+            { name: "崎津", lat: 32.31642, lng: 130.026 },
+            { name: "新合", lat: 32.33596, lng: 130.1162 },
+            { name: "板之河内", lat: 32.37841, lng: 130.0779 },
+            { name: "古江", lat: 32.28463, lng: 130.069 },
+            { name: "宮野河内", lat: 32.29837, lng: 130.1386 }
+        ];
+
+        const gsiStdLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+            attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+        });
+        const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        });
+        const gsiPhotoLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
+            maxZoom: 18,
+            attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+        });
+
+        const map = L.map('map', {
+            center: [32.6500, 130.7000],
+            zoom: 9,
+            layers: [gsiStdLayer]
+        });
+
+        const baseMaps = { "gsiStd": gsiStdLayer, "osm": osmLayer, "gsiPhoto": gsiPhotoLayer };
+        const mapTypeControl = L.control({ position: 'topright' });
+        mapTypeControl.onAdd = function() {
+            const div = L.DomUtil.create('div', 'map-type-control');
+            div.innerHTML = `
+                <label style="font-weight:bold; margin-right:5px;">背景地図:</label>
+                <select id="map-type-select">
+                    <option value="gsiStd">国土地理院 (標準地図)</option>
+                    <option value="osm">OpenStreetMap</option>
+                    <option value="gsiPhoto">国土地理院 (航空写真)</option>
+                </select>
+            `;
+            L.DomEvent.disableClickPropagation(div);
+            return div;
+        };
+        mapTypeControl.addTo(map);
+
+        let currentBaseLayer = gsiStdLayer;
+        document.getElementById('map-type-select').addEventListener('change', function(e) {
+            if (currentBaseLayer) map.removeLayer(currentBaseLayer);
+            currentBaseLayer = baseMaps[e.target.value];
+            map.addLayer(currentBaseLayer);
+        });
+
+        const selectEl = document.getElementById('location-select');
+        travelDestinations.forEach((dest, index) => {
+            if (dest.isOffice) {
+                const opt = document.createElement('option');
+                opt.value = index;
+                opt.textContent = dest.name;
+                selectEl.appendChild(opt);
+            }
+        });
+
+        const activeMarkerGroup = L.layerGroup().addTo(map);
+        let activeCircle = null;
+        let clickMarker = null;
+        let lineToOffice = null;
+        let lineToNearest = null;
+        let selectedOfficeData = null;
+        let lastHighlightedMarker = null;
+
+        selectEl.addEventListener('change', function(e) {
+            clearAllLayers();
+
+            const idx = e.target.value;
+            if (idx === "") {
+                selectedOfficeData = null;
+                document.getElementById('result-info').innerHTML = "上のリストから拠点を選択してください。";
+                return;
+            }
+
+            const selected = travelDestinations[idx];
+            selectedOfficeData = selected;
+
+            map.setView([selected.lat, selected.lng], 12);
+            drawCircle(selected);
+
+            const officeMarker = L.circleMarker([selected.lat, selected.lng], {
+                radius: 11,
+                color: '#1a365d',
+                fillColor: '#1a365d',
+                fillOpacity: 0.95,
+                weight: 3
+            }).addTo(activeMarkerGroup);
+
+            const popupContent = selected.address 
+                ? `<b>${selected.name}</b><br><small>${selected.address}</small>`
+                : `<b>${selected.name}</b>`;
+            officeMarker.bindPopup(popupContent);
+
+            const officeLatLng = L.latLng(selected.lat, selected.lng);
+
+            travelDestinations.forEach(dest => {
+                if (dest === selected) return;
+
+                const dist = map.distance(officeLatLng, L.latLng(dest.lat, dest.lng));
+                const isInside = dist <= RADIUS_METERS;
+
+                const marker = L.circleMarker([dest.lat, dest.lng], {
+                    radius: isInside ? 7 : 6,
+                    color: isInside ? '#c62828' : '#0275d8',
+                    fillColor: isInside ? '#e53935' : '#29b6f6',
+                    fillOpacity: 0.85,
+                    weight: 2
+                }).addTo(activeMarkerGroup);
+
+                marker.destData = dest;
+                marker.isInside = isInside;
+
+                const isOfficeName = dest.isOffice || dest.name === "県庁" || dest.name.includes("振興局");
+
+                if (!isOfficeName) {
+                    const labelClass = isInside 
+                        ? 'marker-label marker-label-inside' 
+                        : 'marker-label marker-label-outside';
+
+                    marker.bindTooltip(dest.name, {
+                        permanent: true,
+                        direction: 'right',
+                        offset: [8, 0],
+                        className: labelClass
+                    });
+                }
+
+                const zoneLabel = isInside 
+                    ? '<b class="zone-inside">【在勤地内】</b>' 
+                    : '<b class="zone-outside">【在勤地外】</b>';
+
+                marker.bindPopup(`
+                    <b>${dest.name}</b><br>
+                    ${zoneLabel}<br>
+                    拠点からの距離: ${(dist / 1000).toFixed(2)} km
+                `);
+            });
+
+            const addressText = selected.address ? `<p style="margin:2px 0 0 0; font-size:12px; color:#000000;">${selected.address}</p>` : '';
+            const panel = document.getElementById('result-info');
+            panel.innerHTML = `
+                <p style="margin:0;">基準拠点: ${selected.name}</p>
+                ${addressText}
+            `;
+        });
+
+        map.on('click', function(e) {
+            if (!selectedOfficeData) {
+                alert("先にドロップダウンリストから対象の拠点を選択してください。");
+                return;
+            }
+
+            clearClickData();
+
+            clickMarker = L.circleMarker(e.latlng, {
+                color: '#0275d8',
+                radius: 8,
+                fillColor: '#0275d8',
+                fillOpacity: 0.9,
+                weight: 2
+            }).addTo(map);
+
+            const officeLatLng = L.latLng(selectedOfficeData.lat, selectedOfficeData.lng);
+            const minDistance = map.distance(e.latlng, officeLatLng);
+
+            lineToOffice = L.polyline([e.latlng, officeLatLng], {
+                color: '#0275d8',
+                weight: 2,
+                dashArray: '5, 5'
+            }).addTo(map);
+
+            const isInside8km = minDistance <= RADIUS_METERS;
+            const zoneText = isInside8km 
+                ? `<span class="zone-inside">在勤地内 (8km圏内)</span>` 
+                : `<span class="zone-outside">在勤地外 (8km超)</span>`;
+
+            let nearestMarker = null;
+            let minDestDist = Infinity;
+
+            activeMarkerGroup.eachLayer(layer => {
+                if (layer.destData && !layer.destData.isOffice) {
+                    const d = map.distance(e.latlng, layer.getLatLng());
+                    if (d < minDestDist) {
+                        minDestDist = d;
+                        nearestMarker = layer;
+                    }
+                }
+            });
+
+            if (nearestMarker) {
+                nearestMarker.setStyle({
+                    radius: 12,
+                    color: '#d32f2f',
+                    fillColor: '#ffeb3b',
+                    fillOpacity: 1.0,
+                    weight: 3
+                });
+                nearestMarker.bringToFront();
+                lastHighlightedMarker = nearestMarker;
+
+                lineToNearest = L.polyline([e.latlng, nearestMarker.getLatLng()], {
+                    color: '#f57c00',
+                    weight: 3,
+                    dashArray: '4, 4'
+                }).addTo(map);
+            }
+
+            const nearestText = nearestMarker 
+                ? `【${nearestMarker.destData.name}】` 
+                : "データなし";
+            const nearestDistText = nearestMarker
+                ? `約 ${(minDestDist / 1000).toFixed(2)} km`
+                : "-";
+
+            const panel = document.getElementById('result-info');
+            panel.innerHTML = `
+                <p style="margin:3px 0; color:#000000;">基準拠点: ${selectedOfficeData.name}</p>
+                <p style="margin:3px 0;" class="dest-highlight">最寄り地点: ${nearestText}</p>
+                <p style="margin:3px 0; font-size:13px; color:#000000;">地点までの距離: ${nearestDistText}</p>
+                <hr style="margin:3px 0; border:0; border-top:1px solid #ddd;">
+                <p style="margin:3px 0; color:#000000;">拠点からの距離: <span class="distance-highlight">${(minDistance / 1000).toFixed(2)} km</span></p>
+                <p style="margin:3px 0; color:#000000;">判定区分: ${zoneText}</p>
+            `;
+        });
+
+        function drawCircle(office) {
+            activeCircle = L.circle([office.lat, office.lng], {
+                color: '#d9534f',
+                fillColor: '#f03',
+                fillOpacity: 0.12,
+                radius: RADIUS_METERS,
+                interactive: false
+            }).addTo(map);
+        }
+
+        function clearClickData() {
+            if (clickMarker) { map.removeLayer(clickMarker); clickMarker = null; }
+            if (lineToOffice) { map.removeLayer(lineToOffice); lineToOffice = null; }
+            if (lineToNearest) { map.removeLayer(lineToNearest); lineToNearest = null; }
+            
+            if (lastHighlightedMarker) {
+                const isInside = lastHighlightedMarker.isInside;
+                lastHighlightedMarker.setStyle({
+                    radius: isInside ? 7 : 6,
+                    color: isInside ? '#c62828' : '#0275d8',
+                    fillColor: isInside ? '#e53935' : '#29b6f6',
+                    fillOpacity: 0.85,
+                    weight: 2
+                });
+                lastHighlightedMarker = null;
+            }
+        }
+
+        function clearAllLayers() {
+            activeMarkerGroup.clearLayers();
+            if (activeCircle) { map.removeLayer(activeCircle); activeCircle = null; }
+            clearClickData();
+        }
+    </script>
+</body>
+</html>
